@@ -10,6 +10,44 @@ npm start
 
 Open `http://localhost:3000`, create a room, then share the invite URL or six-character room code.
 
+## Deploy it
+
+This app needs a long-running Node server for `/api/rooms` and `/ws`. A Netlify static deploy by itself will load the HTML/CSS/JS, but room creation and realtime sync will not work because Netlify static hosting does not run `server.js`.
+
+### Option 1: one Node host
+
+Deploy the whole repo to a Node host such as Render, Railway, Fly.io, or your VPS.
+
+- Start command: `npm start`
+- Node version: `20` or newer
+- Environment: set `PORT` only if your host does not inject it automatically
+
+This serves the frontend, API, and WebSocket server from the same origin.
+
+### Option 2: Netlify frontend + Node backend
+
+Use Netlify for the static files and run `server.js` somewhere else.
+
+1. Deploy this repo to a Node host and copy its HTTPS URL, for example `https://watch-backend.example.com`.
+2. Set the backend environment variable:
+
+```bash
+ALLOWED_ORIGINS=https://your-site.netlify.app
+```
+
+3. On Netlify, keep `public` as the publish directory. `netlify.toml` already sets this.
+4. Edit `public/config.js` before deploying the frontend:
+
+```js
+window.WATCH_TOGETHER_CONFIG = {
+  backendUrl: "https://watch-backend.example.com"
+};
+```
+
+The frontend will call `https://watch-backend.example.com/api/rooms` and connect to `wss://watch-backend.example.com/ws`.
+
+Mic and camera access require HTTPS in production. If the frontend is on Netlify, the backend also needs a valid HTTPS/WSS URL.
+
 ## Playback model
 
 This repo starts with two modes:
@@ -33,6 +71,7 @@ For Netflix/Prime/Disney-style DRM sites, a normal website generally cannot embe
 ## Production next steps
 
 - Replace in-memory rooms with Redis or Postgres.
+- Add a deploy pipeline so `public/config.js` is generated from environment variables instead of edited by hand.
 - Add auth, room moderation, expiring invites, and rate limits.
 - Add TURN credentials for reliable WebRTC outside a LAN.
 - Add an SFU for group media instead of peer-to-peer meshes.

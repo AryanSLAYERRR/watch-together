@@ -1,3 +1,6 @@
+const runtimeConfig = window.WATCH_TOGETHER_CONFIG || {};
+const backendUrl = normalizeBackendUrl(runtimeConfig.backendUrl || "");
+
 const state = {
   socket: null,
   reconnectTimer: null,
@@ -99,8 +102,7 @@ setInterval(() => {
 }, 4500);
 
 function connect() {
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  state.socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  state.socket = new WebSocket(websocketUrl("/ws"));
 
   state.socket.addEventListener("open", () => {
     setConnection(true);
@@ -119,9 +121,14 @@ function connect() {
     handleMessage(message);
   });
 
+  state.socket.addEventListener("error", () => {
+    setConnection(false);
+  });
+
   state.socket.addEventListener("close", () => {
     setConnection(false);
-    setBootStatus("Reconnecting...");
+    setBootStatus(backendUrl ? "Backend reconnecting..." : "Realtime server unavailable...");
+    if (!state.bootDone) completeBoot("Offline");
     clearTimeout(state.reconnectTimer);
     state.reconnectTimer = setTimeout(connect, 1200);
   });
@@ -134,18 +141,25 @@ async function createRoom(event) {
   const name = clean(form.get("name")) || "Host";
   persistName(name);
 
-  const response = await fetch("/api/rooms", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      title: form.get("title"),
-      sourceUrl: form.get("sourceUrl"),
-      mode: form.get("mode"),
-      hostOnlyControls: form.get("hostOnlyControls") === "on",
-      voiceEnabled: form.get("voiceEnabled") === "on",
-      videoEnabled: form.get("videoEnabled") === "on"
-    })
-  });
+  let response;
+  try {
+    response = await fetch(apiUrl("/api/rooms"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: form.get("title"),
+        sourceUrl: form.get("sourceUrl"),
+        mode: form.get("mode"),
+        hostOnlyControls: form.get("hostOnlyControls") === "on",
+        voiceEnabled: form.get("voiceEnabled") === "on",
+        videoEnabled: form.get("videoEnabled") === "on"
+      })
+    });
+  } catch {
+    completeBoot("Ready");
+    toast("Could not reach the realtime backend.");
+    return;
+  }
 
   if (!response.ok) {
     completeBoot("Ready");
@@ -803,6 +817,35 @@ function persistName(name) {
 
 function clean(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeBackendUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (!/^https?:\/\//i.test(text)) return "";
+  try {
+    const url = new URL(text);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    const basePath = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${basePath}`;
+  } catch {
+    return "";
+  }
+}
+
+function apiUrl(pathname) {
+  return backendUrl ? `${backendUrl}${pathname}` : pathname;
+}
+
+function websocketUrl(pathname) {
+  if (backendUrl) {
+    const url = new URL(`${backendUrl}${pathname}`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
+  }
+
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${location.host}${pathname}`;
 }
 
 function normalizeReaction(value) {

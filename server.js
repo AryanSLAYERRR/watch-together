@@ -7,6 +7,13 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const port = Number(process.env.PORT || 3000);
+const maxWsPayloadBytes = Number(process.env.MAX_WS_PAYLOAD_BYTES || 256 * 1024);
+const allowedOrigins = new Set(
+  String(process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean)
+);
 
 const rooms = new Map();
 const clients = new Map();
@@ -27,6 +34,22 @@ const mimeTypes = {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+    applySecurityHeaders(res);
+    applyCors(req, res);
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(isOriginAllowed(req.headers.origin) ? 204 : 403, {
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "access-control-allow-headers": "content-type"
+      });
+      res.end();
+      return;
+    }
+
+    if (req.headers.origin && !isOriginAllowed(req.headers.origin)) {
+      sendJson(res, 403, { error: "Origin not allowed" });
+      return;
+    }
 
     if (req.method === "POST" && url.pathname === "/api/rooms") {
       const body = await readJson(req);
@@ -59,7 +82,8 @@ const server = http.createServer(async (req, res) => {
 
 server.on("upgrade", (req, socket) => {
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
-  if (url.pathname !== "/ws") {
+  if (url.pathname !== "/ws" || !isOriginAllowed(req.headers.origin)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
@@ -351,6 +375,12 @@ function parseFrames(client) {
       offset += 8;
     }
 
+    if (length > maxWsPayloadBytes) {
+      client.socket.destroy();
+      disconnect(client);
+      return;
+    }
+
     const maskOffset = masked ? 4 : 0;
     if (client.buffer.length < offset + maskOffset + length) return;
 
@@ -539,6 +569,31 @@ function hostname(value) {
 function finiteNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (allowedOrigins.size === 0) return true;
+  return allowedOrigins.has(String(origin).replace(/\/+$/, ""));
+}
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+
+  if (origin && isOriginAllowed(origin)) {
+    res.setHeader("access-control-allow-origin", origin);
+    res.setHeader("vary", "Origin");
+    return;
+  }
+
+  if (!origin && allowedOrigins.size === 0) {
+    res.setHeader("access-control-allow-origin", "*");
+  }
+}
+
+function applySecurityHeaders(res) {
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
 }
 
 function readJson(req) {
