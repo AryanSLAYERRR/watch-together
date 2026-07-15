@@ -13,6 +13,10 @@ const state = {
   lastPlaybackSentAt: 0,
   localStream: null,
   peers: new Map(),
+  makingOffers: new Set(),
+  ignoredOffers: new Set(),
+  queuedCandidates: new Map(),
+  mediaBusy: new Set(),
   knownParticipants: new Map(),
   bootStartedAt: performance.now(),
   bootDone: false
@@ -327,6 +331,11 @@ function renderStage() {
 }
 
 function renderParticipants(participants) {
+  const activeIds = new Set(participants.map((person) => person.id));
+  for (const peerId of [...state.peers.keys()]) {
+    if (!activeIds.has(peerId)) closePeer(peerId);
+  }
+
   state.knownParticipants = new Map(participants.map((person) => [person.id, person]));
   els.participantCount.textContent = String(participants.length);
   els.participants.replaceChildren(...participants.map(renderParticipant));
@@ -460,24 +469,32 @@ async function applyPlayback(playback, from) {
 
 async function toggleMedia(kind) {
   if (!state.room) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    toast("Mic and camera need a secure browser session.");
+    return;
+  }
   if (kind === "audio" && !state.room.settings.voiceEnabled) return;
   if (kind === "video" && !state.room.settings.videoEnabled) return;
+  if (state.mediaBusy.has(kind)) return;
 
-  if (mediaEnabled(kind)) {
-    stopMedia(kind);
-    return;
-  }
+  state.mediaBusy.add(kind);
+  updateMediaButtons();
 
   try {
+    if (mediaEnabled(kind)) {
+      stopMedia(kind);
+      return;
+    }
+
     await startMedia(kind);
+    notifyMediaState();
+    await createOffersForParticipants();
   } catch {
     toast(`${kind === "audio" ? "Microphone" : "Camera"} permission was blocked.`);
-    return;
+  } finally {
+    state.mediaBusy.delete(kind);
+    updateMediaButtons();
   }
-
-  updateMediaButtons();
-  notifyMediaState();
-  await createOffersForParticipants();
 }
 
 async function createOffersForParticipants() {
@@ -500,31 +517,60 @@ function handleNewParticipants(participants) {
 
 async function createOffer(peerId) {
   const pc = ensurePeer(peerId);
+  if (pc.connectionState === "closed") return;
+  if (state.makingOffers.has(peerId)) return;
   if (pc.signalingState !== "stable") return;
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  send({ type: "signal", to: peerId, signal: pc.localDescription });
+
+  try {
+    state.makingOffers.add(peerId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: "signal", to: peerId, signal: pc.localDescription });
+  } catch {
+    return;
+  } finally {
+    state.makingOffers.delete(peerId);
+  }
 }
 
 async function handleSignal(peerId, signal) {
-  const pc = ensurePeer(peerId);
-  if (signal.type === "offer") {
-    await pc.setRemoteDescription(signal);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    send({ type: "signal", to: peerId, signal: pc.localDescription });
-    return;
-  }
+  try {
+    const pc = ensurePeer(peerId);
+    if (signal.type === "offer") {
+      const offerCollision = state.makingOffers.has(peerId) || pc.signalingState !== "stable";
+      const ignoreOffer = !isPolitePeer(peerId) && offerCollision;
+      if (ignoreOffer) {
+        state.ignoredOffers.add(peerId);
+      } else {
+        state.ignoredOffers.delete(peerId);
+      }
+      if (ignoreOffer) return;
 
-  if (signal.type === "answer") {
-    await pc.setRemoteDescription(signal);
-    return;
-  }
+      await pc.setRemoteDescription(signal);
+      await flushQueuedCandidates(peerId);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      send({ type: "signal", to: peerId, signal: pc.localDescription });
+      return;
+    }
 
-  if (signal.candidate) {
-    try {
+    if (signal.type === "answer") {
+      if (pc.signalingState !== "have-local-offer") return;
+      await pc.setRemoteDescription(signal);
+      await flushQueuedCandidates(peerId);
+      return;
+    }
+
+    if (signal.candidate) {
+      if (state.ignoredOffers.has(peerId)) return;
+      if (!pc.remoteDescription) {
+        queueCandidate(peerId, signal);
+        return;
+      }
       await pc.addIceCandidate(signal);
-    } catch {}
+    }
+  } catch {
+    closePeer(peerId);
   }
 }
 
@@ -539,6 +585,10 @@ function ensurePeer(peerId) {
     activeLocalTracks().forEach((track) => pc.addTrack(track, state.localStream));
   }
 
+  pc.addEventListener("negotiationneeded", () => {
+    window.setTimeout(() => createOffer(peerId), 0);
+  });
+
   pc.addEventListener("icecandidate", (event) => {
     if (event.candidate) {
       send({ type: "signal", to: peerId, signal: event.candidate });
@@ -546,17 +596,7 @@ function ensurePeer(peerId) {
   });
 
   pc.addEventListener("track", (event) => {
-    const [stream] = event.streams;
-    if (!stream) return;
-    let video = document.querySelector(`[data-peer-video="${peerId}"]`);
-    if (!video) {
-      video = document.createElement("video");
-      video.dataset.peerVideo = peerId;
-      video.autoplay = true;
-      video.playsInline = true;
-      els.remoteGrid.append(video);
-    }
-    video.srcObject = stream;
+    attachRemoteTrack(peerId, event.track);
   });
 
   pc.addEventListener("connectionstatechange", () => {
@@ -573,11 +613,89 @@ function closePeer(peerId) {
   const pc = state.peers.get(peerId);
   if (pc) pc.close();
   state.peers.delete(peerId);
-  document.querySelector(`[data-peer-video="${peerId}"]`)?.remove();
+  state.makingOffers.delete(peerId);
+  state.ignoredOffers.delete(peerId);
+  state.queuedCandidates.delete(peerId);
+  document.querySelector(`[data-peer-tile="${peerId}"]`)?.remove();
+}
+
+function attachRemoteTrack(peerId, track) {
+  const tile = ensureRemoteTile(peerId);
+  const media = track.kind === "video" ? tile.video : tile.audio;
+  let stream = media.srcObject;
+
+  if (!(stream instanceof MediaStream)) {
+    stream = new MediaStream();
+    media.srcObject = stream;
+  }
+
+  if (!stream.getTracks().some((existingTrack) => existingTrack.id === track.id)) {
+    stream.addTrack(track);
+  }
+
+  tile.node.classList.toggle("has-video", tile.video.srcObject instanceof MediaStream && tile.video.srcObject.getVideoTracks().length > 0);
+  tile.node.classList.toggle("has-audio", tile.audio.srcObject instanceof MediaStream && tile.audio.srcObject.getAudioTracks().length > 0);
+  tile.label.textContent = remoteLabel(peerId, track.kind);
+  track.addEventListener("ended", () => removeRemoteTrack(peerId, track));
+  track.addEventListener("mute", () => tile.node.classList.add(`${track.kind}-muted`));
+  track.addEventListener("unmute", () => tile.node.classList.remove(`${track.kind}-muted`));
+
+  media.play?.().catch(() => {
+    tile.label.textContent = "Click the page to hear audio";
+  });
+}
+
+function ensureRemoteTile(peerId) {
+  const existing = document.querySelector(`[data-peer-tile="${peerId}"]`);
+  if (existing) {
+    return {
+      node: existing,
+      video: existing.querySelector("video"),
+      audio: existing.querySelector("audio"),
+      label: existing.querySelector("span")
+    };
+  }
+
+  const node = document.createElement("div");
+  node.className = "remote-peer";
+  node.dataset.peerTile = peerId;
+
+  const video = document.createElement("video");
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
+
+  const audio = document.createElement("audio");
+  audio.autoplay = true;
+
+  const label = document.createElement("span");
+  label.textContent = remoteLabel(peerId);
+
+  node.append(video, audio, label);
+  els.remoteGrid.append(node);
+  return { node, video, audio, label };
+}
+
+function removeRemoteTrack(peerId, track) {
+  const tile = document.querySelector(`[data-peer-tile="${peerId}"]`);
+  if (!tile) return;
+  const media = tile.querySelector(track.kind === "video" ? "video" : "audio");
+  const stream = media?.srcObject;
+  if (stream instanceof MediaStream) stream.removeTrack(track);
+  if (track.kind === "video") tile.classList.remove("has-video");
+  if (track.kind === "audio") tile.classList.remove("has-audio");
+}
+
+function remoteLabel(peerId, kind = "") {
+  const person = state.knownParticipants.get(peerId);
+  const name = person?.name || "Friend";
+  if (kind === "audio") return `${name} - audio`;
+  if (kind === "video") return `${name} - camera`;
+  return name;
 }
 
 async function startMedia(kind) {
-  const stream = await navigator.mediaDevices.getUserMedia(kind === "audio" ? { audio: true } : { video: true });
+  const stream = await navigator.mediaDevices.getUserMedia(mediaConstraints(kind));
   const [track] = kind === "audio" ? stream.getAudioTracks() : stream.getVideoTracks();
   if (!track) throw new Error("No media track returned");
   attachLocalTrack(track);
@@ -619,6 +737,28 @@ function ensureLocalStream() {
   if (!state.localStream) state.localStream = new MediaStream();
 }
 
+function mediaConstraints(kind) {
+  if (kind === "audio") {
+    return {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      },
+      video: false
+    };
+  }
+
+  return {
+    audio: false,
+    video: {
+      width: { ideal: 640 },
+      height: { ideal: 360 },
+      frameRate: { ideal: 24, max: 30 }
+    }
+  };
+}
+
 function cleanupLocalStream() {
   if (state.localStream && state.localStream.getTracks().length === 0) {
     state.localStream = null;
@@ -648,6 +788,28 @@ async function renegotiatePeers() {
   }
 }
 
+function queueCandidate(peerId, candidate) {
+  const queue = state.queuedCandidates.get(peerId) || [];
+  queue.push(candidate);
+  state.queuedCandidates.set(peerId, queue);
+}
+
+async function flushQueuedCandidates(peerId) {
+  const pc = state.peers.get(peerId);
+  const queue = state.queuedCandidates.get(peerId) || [];
+  state.queuedCandidates.delete(peerId);
+
+  for (const candidate of queue) {
+    try {
+      await pc?.addIceCandidate(candidate);
+    } catch {}
+  }
+}
+
+function isPolitePeer(peerId) {
+  return String(state.clientId || "") > String(peerId || "");
+}
+
 function updateLocalPreview() {
   const showPreview = mediaEnabled("video") && state.localStream;
   els.localPreviewWrap.classList.toggle("hidden", !showPreview);
@@ -655,10 +817,21 @@ function updateLocalPreview() {
 }
 
 function updateMediaButtons() {
-  els.toggleMic.textContent = mediaEnabled("audio") ? "Mic on" : "Mic off";
-  els.toggleCamera.textContent = mediaEnabled("video") ? "Camera on" : "Camera off";
-  els.toggleMic.classList.toggle("active", mediaEnabled("audio"));
-  els.toggleCamera.classList.toggle("active", mediaEnabled("video"));
+  const audioOn = mediaEnabled("audio");
+  const videoOn = mediaEnabled("video");
+  const audioBusy = state.mediaBusy.has("audio");
+  const videoBusy = state.mediaBusy.has("video");
+  const voiceAllowed = Boolean(state.room?.settings.voiceEnabled);
+  const videoAllowed = Boolean(state.room?.settings.videoEnabled);
+
+  els.toggleMic.textContent = audioBusy ? "Mic..." : audioOn ? "Mic on" : "Mic off";
+  els.toggleCamera.textContent = videoBusy ? "Camera..." : videoOn ? "Camera on" : "Camera off";
+  els.toggleMic.disabled = !state.room || !voiceAllowed || audioBusy;
+  els.toggleCamera.disabled = !state.room || !videoAllowed || videoBusy;
+  els.toggleMic.classList.toggle("active", audioOn);
+  els.toggleCamera.classList.toggle("active", videoOn);
+  els.toggleMic.setAttribute("aria-pressed", String(audioOn));
+  els.toggleCamera.setAttribute("aria-pressed", String(videoOn));
 }
 
 function notifyMediaState() {
