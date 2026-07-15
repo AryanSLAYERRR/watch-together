@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Watch Together</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="boot-screen" id="bootScreen" role="status" aria-live="polite">
+      <div class="boot-room">
+        <div class="boot-scene" aria-hidden="true">
+          <div class="room-wall">
+            <div class="wall-frame">
+              <div class="curtain curtain-left"></div>
+              <div class="curtain curtain-right"></div>
+              <div class="window-light"></div>
+            </div>
+            <div class="shelf">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <div class="lamp">
+              <div class="lamp-shade"></div>
+              <div class="lamp-stem"></div>
+              <div class="lamp-base"></div>
+            </div>
+          </div>
+          <div class="sofa">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+        <div class="boot-copy">
+          <p>watch together</p>
+          <h1>getting the room ready</h1>
+          <span id="bootStatus">opening a private session...</span>
+        </div>
+      </div>
+    </div>
+
+    <main class="app-shell">
+      <section class="lobby-view" id="lobbyView" aria-label="Room setup">
+        <div class="brand-strip">
+          <div>
+            <p class="eyebrow">watch together</p>
+            <h1>make a room, pass the code.</h1>
+          </div>
+          <div class="connection-pill" id="lobbyConnection">Offline</div>
+        </div>
+
+        <div class="lobby-grid">
+          <form class="panel" id="createForm">
+            <div class="panel-header">
+              <h2>Start a room</h2>
+              <span class="panel-note">host</span>
+            </div>
+
+            <label>
+              Your name
+              <input name="name" autocomplete="nickname" maxlength="32" placeholder="Aryan" required>
+            </label>
+
+            <label>
+              Room name
+              <input name="title" maxlength="80" placeholder="Friday night">
+            </label>
+
+            <label>
+              Source or embed URL
+              <input name="sourceUrl" inputmode="url" placeholder="https://ritzembeds.pages.dev/embed/fox4k-usa">
+            </label>
+
+            <fieldset class="segmented" aria-label="Playback mode">
+              <legend>Playback mode</legend>
+              <label>
+                <input type="radio" name="mode" value="direct-sync" checked>
+                <span>Direct sync</span>
+              </label>
+              <label>
+                <input type="radio" name="mode" value="remote-browser">
+                <span>Server browser</span>
+              </label>
+            </fieldset>
+
+            <div class="toggle-grid">
+              <label class="toggle-row">
+                <span>Host-only controls</span>
+                <input type="checkbox" name="hostOnlyControls" checked>
+              </label>
+              <label class="toggle-row">
+                <span>Mic chat</span>
+                <input type="checkbox" name="voiceEnabled" checked>
+              </label>
+              <label class="toggle-row">
+                <span>Camera chat</span>
+                <input type="checkbox" name="videoEnabled" checked>
+              </label>
+            </div>
+
+            <button class="primary-action" type="submit">Start room</button>
+          </form>
+
+          <form class="panel join-panel" id="joinForm">
+            <div class="panel-header">
+              <h2>Join a room</h2>
+              <span class="panel-note">guest</span>
+            </div>
+
+            <label>
+              Your name
+              <input name="name" autocomplete="nickname" maxlength="32" placeholder="Best friend" required>
+            </label>
+
+            <label>
+              Room code
+              <input name="code" maxlength="6" placeholder="AB12CD" required>
+            </label>
+
+            <button class="secondary-action" type="submit">Join</button>
+            <p class="helper-text">Rooms are temporary and private by code.</p>
+          </form>
+        </div>
+      </section>
+
+      <section class="room-view hidden" id="roomView" aria-label="Watch room">
+        <header class="room-topbar">
+          <div>
+            <p class="eyebrow" id="roomMode">Direct sync</p>
+            <h1 id="roomTitle">Watch room</h1>
+          </div>
+          <div class="room-actions">
+            <button class="icon-action" id="copyInvite" type="button" title="Copy invite code">Invite</button>
+            <button class="icon-action" id="leaveRoom" type="button" title="Leave room">Leave</button>
+          </div>
+        </header>
+
+        <div class="watch-layout">
+          <section class="stage">
+            <div class="stage-meta">
+              <span id="roomCodeBadge">------</span>
+              <span id="sourceLabel">No source</span>
+              <span id="hostBadge">Viewer</span>
+              <span id="syncStatus">Synced</span>
+            </div>
+
+            <div class="video-frame" id="videoFrame">
+              <video id="watchVideo" controls playsinline></video>
+              <iframe
+                class="hidden"
+                id="watchEmbed"
+                title="Watch source"
+                frameborder="0"
+                scrolling="no"
+                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                allowfullscreen></iframe>
+              <div class="remote-placeholder hidden" id="remotePlaceholder">
+                <h2>Server browser</h2>
+                <p>Waiting for a shared browser stream.</p>
+                <button class="secondary-action" id="requestBrowser" type="button">Request server browser</button>
+              </div>
+              <div class="empty-source" id="emptySource">
+                <h2>No source yet</h2>
+                <p>Paste an embed or direct video URL.</p>
+              </div>
+            </div>
+
+            <div class="sync-controls">
+              <button id="syncNow" type="button">Sync now</button>
+              <label>
+                Source URL
+                <input id="sourceInput" inputmode="url" placeholder="https://ritzembeds.pages.dev/embed/fox4k-usa">
+              </label>
+              <button id="updateSource" type="button">Update source</button>
+              <div class="reaction-dock" aria-label="Reactions">
+                <div class="reaction-presets">
+                  <button type="button" data-reaction-preset="😂">😂</button>
+                  <button type="button" data-reaction-preset="❤️">❤️</button>
+                  <button type="button" data-reaction-preset="👀">👀</button>
+                  <button type="button" data-reaction-preset="🔥">🔥</button>
+                  <button type="button" data-reaction-preset="⏸️">⏸️</button>
+                </div>
+                <form class="reaction-form" id="customReactionForm">
+                  <input id="customReactionInput" placeholder="custom reaction, max 5 words">
+                  <button type="submit">React</button>
+                </form>
+              </div>
+            </div>
+          </section>
+
+          <aside class="sidecar" aria-label="Room controls">
+            <section class="side-section">
+              <div class="section-title">
+                <h2>People</h2>
+                <span id="participantCount">0</span>
+              </div>
+              <div class="participant-list" id="participants"></div>
+              <div class="media-controls">
+                <button id="toggleMic" type="button">Mic off</button>
+                <button id="toggleCamera" type="button">Camera off</button>
+              </div>
+              <div class="local-preview hidden" id="localPreviewWrap">
+                <video id="localPreview" muted autoplay playsinline></video>
+              </div>
+              <div class="remote-grid" id="remoteGrid"></div>
+            </section>
+
+            <section class="side-section chat-section">
+              <div class="section-title">
+                <h2>Chat</h2>
+                <span id="chatState">Ready</span>
+              </div>
+              <div class="chat-log" id="chatLog" aria-live="polite"></div>
+              <form class="chat-form" id="chatForm">
+                <input id="chatInput" maxlength="600" placeholder="Send a message">
+                <button type="submit">Send</button>
+              </form>
+            </section>
+
+            <section class="side-section settings-section" id="settingsSection">
+              <div class="section-title">
+                <h2>Room</h2>
+                <span>Host</span>
+              </div>
+              <label class="toggle-row">
+                <span>Host-only controls</span>
+                <input type="checkbox" id="hostOnlyToggle">
+              </label>
+              <label class="toggle-row">
+                <span>Chat</span>
+                <input type="checkbox" id="chatToggle">
+              </label>
+              <label class="toggle-row">
+                <span>Mic</span>
+                <input type="checkbox" id="voiceToggle">
+              </label>
+              <label class="toggle-row">
+                <span>Camera</span>
+                <input type="checkbox" id="videoToggle">
+              </label>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast-area" id="toastArea" aria-live="polite"></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "watch-together",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Teleparty-style watch room prototype with synced playback, chat, room codes, and WebRTC signaling.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
